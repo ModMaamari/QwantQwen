@@ -345,6 +345,12 @@ static ds4_shape g_ds4_shape = {
 
 static uint32_t g_ds4_compress_ratios[DS4_MAX_LAYER] = {0};
 
+/* Qwen3.6 per-layer attention type: true = GQA full attention, false = Gated
+ * DeltaNet linear attention.  Populated by ds4_qwen_init_layer_schedule() from
+ * the full-attention interval (config layer_types places full attention on
+ * layers 3,7,...,39 when the interval is 4).  Unused on the DeepSeek path. */
+static bool g_qwen_layer_is_full[DS4_MAX_LAYER] = {0};
+
 #define DS4_MODEL_SHAPE_NAME          (g_ds4_shape.name)
 #define DS4_MODEL_VARIANT             (g_ds4_shape.variant)
 #define DS4_N_LAYER                   (g_ds4_shape.n_layer)
@@ -710,6 +716,24 @@ static uint32_t ds4_expected_layer_compress_ratio(uint32_t il) {
         ds4_die("unsupported DeepSeek4 model variant");
     }
     return 0;
+}
+
+/* Fill g_qwen_layer_is_full[] from the full-attention interval.  With interval
+ * N, every Nth layer (0-indexed il where (il+1) % N == 0) is full attention and
+ * the rest are Gated DeltaNet linear attention.  Call after the Qwen shape is
+ * selected. */
+DS4_MAYBE_UNUSED static void ds4_qwen_init_layer_schedule(void) {
+    const uint32_t interval = DS4_QWEN_FULL_ATTN_INTERVAL;
+    memset(g_qwen_layer_is_full, 0, sizeof(g_qwen_layer_is_full));
+    if (interval == 0) return;
+    for (uint32_t il = 0; il < DS4_N_LAYER && il < DS4_MAX_LAYER; il++)
+        g_qwen_layer_is_full[il] = ((il + 1u) % interval) == 0;
+}
+
+/* True when Qwen layer il uses GQA full attention, false for Gated DeltaNet. */
+DS4_MAYBE_UNUSED static bool ds4_qwen_layer_is_full(uint32_t il) {
+    if (il >= DS4_MAX_LAYER) return false;
+    return g_qwen_layer_is_full[il];
 }
 
 static void ds4_die_errno(const char *what, const char *path) {
