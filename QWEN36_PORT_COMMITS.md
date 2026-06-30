@@ -15,29 +15,28 @@ Commit message convention: `feat(qwen)/refactor(qwen)/docs(qwen)/chore(qwen): �
 
 - ✅ **C01** `docs(qwen): add port plan and atomic commit map`
   Adds `QWEN36_PORT_PLAN.md` + this file.
-- ⬜ **C02** `docs(qwen): add Qwen3.6 architecture reference from config.json`
+- ✅ **C02** `docs(qwen): add Qwen3.6 architecture reference from config.json`
   `QWEN36_ARCH.md` with the exact config fields, tensor inventory, and the
-  derived per-layer type schedule. Add build artifacts already covered by
-  `.gitignore`; note WSL2 build.
+  derived per-layer type schedule.
 
 ## Phase 1 — Build & identity
 
-- ⬜ **C03** `chore(qwen): document WSL2+CUDA build and add make alias`
-  Build notes in README/section; `make cuda-qwen` alias (delegates to existing
-  CUDA target). No behavior change.
+- ⬜ **C03** `chore(qwen): document WSL2+CUDA build` *(deferred — a per-model
+  make alias is premature while there is one shared binary; will add real
+  build/run notes once the Qwen forward path exists)*
 
 ## Phase 2 — Shape & config
 
-- ⬜ **C04** `feat(qwen): add Qwen3.6 model variant and shape`
+- ✅ **C04** `feat(qwen): add Qwen3.6 model variant and shape`
   `DS4_VARIANT_QWEN36` enum value; extend `ds4_shape` with Qwen fields
   (`full_attention_interval`, `n_head_dim_full=256`, `n_head_kv=2`,
   `linear_*` dims, `moe_intermediate`, `shared_intermediate`,
   `partial_rotary_factor`, `n_expert_used=8`, etc.); add `DS4_SHAPE_QWEN36`
   (40 layers, 2048 embd, 248320 vocab). DeepSeek shapes leave new fields zero.
-- ⬜ **C05** `feat(qwen): per-layer attention-type schedule`
-  `g_qwen_layer_is_full[]` derived from `full_attention_interval` (or GGUF
-  array), analogous to `g_ds4_compress_ratios[]`; accessor helper.
-- ⬜ **C06** `feat(qwen): dispatch config validation by architecture`
+- ✅ **C05** `feat(qwen): per-layer attention-type schedule`
+  `g_qwen_layer_is_full[]` derived from `full_attention_interval`, analogous to
+  `g_ds4_compress_ratios[]`; `ds4_qwen_init_layer_schedule()` + accessor.
+- ✅ **C06** `feat(qwen): dispatch config validation by architecture`
   Branch on `general.architecture`: `qwen3_5_moe` → new
   `config_validate_model_qwen()` reading the `qwen3_5moe.*` namespace and
   selecting `DS4_SHAPE_QWEN36`; DeepSeek arch keeps existing path.
