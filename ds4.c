@@ -722,7 +722,7 @@ static uint32_t ds4_expected_layer_compress_ratio(uint32_t il) {
  * N, every Nth layer (0-indexed il where (il+1) % N == 0) is full attention and
  * the rest are Gated DeltaNet linear attention.  Call after the Qwen shape is
  * selected. */
-DS4_MAYBE_UNUSED static void ds4_qwen_init_layer_schedule(void) {
+static void ds4_qwen_init_layer_schedule(void) {
     const uint32_t interval = DS4_QWEN_FULL_ATTN_INTERVAL;
     memset(g_qwen_layer_is_full, 0, sizeof(g_qwen_layer_is_full));
     if (interval == 0) return;
@@ -4088,6 +4088,72 @@ static void config_validate_model(const ds4_model *m) {
     config_expect_f32("hyper_connection.epsilon", hc_eps, DS4_HC_EPS);
     const bool expert_weight_norm = required_bool(m, "deepseek4.expert_weights_norm");
     config_expect_bool("expert_weights_norm", expert_weight_norm, true);
+}
+
+/* Qwen3.6 (qwen3_5_moe) metadata validation.  Selects the Qwen shape, then
+ * validates the qwen3_5moe.* namespace a future converter is expected to emit
+ * (see gguf-tools, Phase 8) against DS4_SHAPE_QWEN36, and builds the per-layer
+ * attention schedule.  Keys mirror the DeepSeek namespace style so the same
+ * reader helpers apply. */
+static void config_validate_model_qwen(const ds4_model *m) {
+    g_ds4_shape = DS4_SHAPE_QWEN36;
+
+    const uint32_t n_layer       = required_u32(m, "qwen3_5moe.block_count");
+    const uint32_t n_embd        = required_u32(m, "qwen3_5moe.embedding_length");
+    const uint32_t n_vocab       = required_u32(m, "qwen3_5moe.vocab_size");
+    const uint32_t n_head        = required_u32(m, "qwen3_5moe.attention.head_count");
+    const uint32_t n_head_kv     = required_u32(m, "qwen3_5moe.attention.head_count_kv");
+    const uint32_t n_head_dim    = required_u32(m, "qwen3_5moe.attention.key_length");
+    const uint32_t n_rot         = required_u32(m, "qwen3_5moe.rope.dimension_count");
+    const uint32_t full_interval = required_u32(m, "qwen3_5moe.attention.full_attn_interval");
+    const uint32_t n_expert      = required_u32(m, "qwen3_5moe.expert_count");
+    const uint32_t n_expert_used = required_u32(m, "qwen3_5moe.expert_used_count");
+    const uint32_t n_ff_exp      = required_u32(m, "qwen3_5moe.expert_feed_forward_length");
+    const uint32_t n_shared      = required_u32(m, "qwen3_5moe.expert_shared_count");
+    const uint32_t shared_ff     = required_u32(m, "qwen3_5moe.shared_feed_forward_length");
+    const uint32_t lin_k_head    = required_u32(m, "qwen3_5moe.linear.key_head_count");
+    const uint32_t lin_k_dim     = required_u32(m, "qwen3_5moe.linear.key_length");
+    const uint32_t lin_v_head    = required_u32(m, "qwen3_5moe.linear.value_head_count");
+    const uint32_t lin_v_dim     = required_u32(m, "qwen3_5moe.linear.value_length");
+    const uint32_t lin_conv      = required_u32(m, "qwen3_5moe.linear.conv_kernel");
+
+    config_expect_u32("block_count",                  n_layer,       DS4_N_LAYER);
+    config_expect_u32("embedding_length",             n_embd,        DS4_N_EMBD);
+    config_expect_u32("vocab_size",                   n_vocab,       DS4_N_VOCAB);
+    config_expect_u32("attention.head_count",         n_head,        DS4_N_HEAD);
+    config_expect_u32("attention.head_count_kv",      n_head_kv,     DS4_N_HEAD_KV);
+    config_expect_u32("attention.key_length",         n_head_dim,    DS4_N_HEAD_DIM);
+    config_expect_u32("rope.dimension_count",         n_rot,         DS4_N_ROT);
+    config_expect_u32("attention.full_attn_interval", full_interval, DS4_QWEN_FULL_ATTN_INTERVAL);
+    config_expect_u32("expert_count",                 n_expert,      DS4_N_EXPERT);
+    config_expect_u32("expert_used_count",            n_expert_used, DS4_N_EXPERT_USED);
+    config_expect_u32("expert_feed_forward_length",   n_ff_exp,      DS4_N_FF_EXP);
+    config_expect_u32("expert_shared_count",          n_shared,      DS4_N_EXPERT_SHARED);
+    config_expect_u32("shared_feed_forward_length",   shared_ff,     DS4_QWEN_SHARED_INTERMEDIATE);
+    config_expect_u32("linear.key_head_count",        lin_k_head,    DS4_QWEN_LIN_KEY_HEAD);
+    config_expect_u32("linear.key_length",            lin_k_dim,     DS4_QWEN_LIN_KEY_HEAD_DIM);
+    config_expect_u32("linear.value_head_count",      lin_v_head,    DS4_QWEN_LIN_VALUE_HEAD);
+    config_expect_u32("linear.value_length",          lin_v_dim,     DS4_QWEN_LIN_VALUE_HEAD_DIM);
+    config_expect_u32("linear.conv_kernel",           lin_conv,      DS4_QWEN_LIN_CONV_KERNEL);
+
+    const float rms_eps = required_f32(m, "qwen3_5moe.attention.layer_norm_rms_epsilon");
+    config_expect_f32("attention.layer_norm_rms_epsilon", rms_eps, DS4_RMS_EPS);
+    const float rope_freq_base = required_f32(m, "qwen3_5moe.rope.freq_base");
+    config_expect_f32("rope.freq_base", rope_freq_base, DS4_ROPE_FREQ_BASE);
+
+    ds4_qwen_init_layer_schedule();
+}
+
+/* Dispatch metadata validation by GGUF architecture string.  Qwen3.6 GGUFs use
+ * the qwen3_5_moe architecture; everything else takes the DeepSeek V4 path. */
+static void config_validate_model_dispatch(const ds4_model *m) {
+    ds4_str arch = {0};
+    model_get_string(m, "general.architecture", &arch);
+    if (ds4_streq(arch, "qwen3_5_moe")) {
+        config_validate_model_qwen(m);
+        return;
+    }
+    config_validate_model(m);
 }
 
 static void weights_bind_output(ds4_weights *w, const ds4_model *m, bool required, bool optional) {
@@ -25699,7 +25765,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
     model_open(&e->model, opt->model_path, graph_backend, !opt->inspect_only);
     if (opt->warm_weights) model_warm_weights(&e->model);
     if (!opt->inspect_only) vocab_load(&e->vocab, &e->model);
-    config_validate_model(&e->model);
+    config_validate_model_dispatch(&e->model);
     if (e->ssd_streaming && !ds4_backend_supports_ssd_streaming(e->backend)) {
         fprintf(stderr, "ds4: --ssd-streaming is currently supported only with --metal/--cuda/--rocm\n");
         ds4_engine_close(e);
