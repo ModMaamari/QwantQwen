@@ -133,8 +133,14 @@ enum {
 };
 
 typedef enum {
-    DS4_VARIANT_FLASH = 0,
-    DS4_VARIANT_PRO   = 1,
+    DS4_VARIANT_FLASH  = 0,
+    DS4_VARIANT_PRO    = 1,
+    /* Qwen3.6-35B-A3B (qwen3_5_moe).  A hybrid model: Gated DeltaNet linear
+     * attention on 3 of every 4 layers, GQA full attention on the 4th, top-8
+     * MoE on every layer.  None of the DeepSeek-specific fields (MLA LoRA,
+     * indexer, hyper-connections, SWA) apply; the qwen_* shape fields below
+     * carry the Qwen-only geometry instead. */
+    DS4_VARIANT_QWEN36 = 2,
 } ds4_variant;
 
 typedef struct {
@@ -172,6 +178,20 @@ typedef struct {
     float rope_yarn_beta_slow;
     float compress_rope_freq_base;
     uint64_t rope_orig_ctx;
+
+    /* Qwen3.6 (qwen3_5_moe) only.  Left zero/false for the DeepSeek shapes.
+     * Reused common fields for Qwen: n_head/n_head_kv/n_head_dim/n_value_dim
+     * are the full-attention GQA geometry, n_rot is the rotary dim count
+     * (partial_rotary_factor * head_dim), n_ff_exp is the routed-expert SwiGLU
+     * width (moe_intermediate_size). */
+    uint32_t qwen_full_attn_interval;   /* full attention every Nth layer (4) */
+    bool     qwen_attn_output_gate;     /* q_proj emits 2x heads; half is gate */
+    uint32_t qwen_lin_key_head;         /* Gated DeltaNet key/query heads (16) */
+    uint32_t qwen_lin_key_head_dim;     /* key/query head dim (128) */
+    uint32_t qwen_lin_value_head;       /* value heads (32) */
+    uint32_t qwen_lin_value_head_dim;   /* value head dim (128) */
+    uint32_t qwen_lin_conv_kernel;      /* depthwise causal conv1d width (4) */
+    uint32_t qwen_shared_intermediate;  /* shared-expert SwiGLU width (512) */
 } ds4_shape;
 
 static const ds4_shape DS4_SHAPE_FLASH = {
@@ -248,6 +268,44 @@ static const ds4_shape DS4_SHAPE_PRO = {
     .rope_orig_ctx = DS4_DEFAULT_ROPE_ORIG_CTX,
 };
 
+/* Qwen3.6-35B-A3B (qwen3_5_moe), text path.  Common fields describe the
+ * full-attention GQA geometry; the qwen_* fields carry the Gated DeltaNet and
+ * MoE specifics.  DeepSeek-only fields (LoRA Q/O, indexer, hyper-connections,
+ * SWA, expert groups) stay zero and are never read on the Qwen forward path. */
+static const ds4_shape DS4_SHAPE_QWEN36 = {
+    .name = "Qwen3.6-35B-A3B",
+    .variant = DS4_VARIANT_QWEN36,
+    .n_layer = 40,
+    .n_embd = 2048,
+    .n_vocab = 248320,
+    .n_head = 16,
+    .n_head_kv = 2,
+    .n_head_dim = 256,
+    .n_value_dim = 256,
+    .n_rot = 64,                 /* partial_rotary_factor 0.25 * head_dim 256 */
+    .n_expert = 256,
+    .n_expert_used = 8,
+    .n_expert_shared = 1,
+    .n_ff_exp = 512,             /* moe_intermediate_size (routed expert width) */
+    .rms_eps = DS4_DEFAULT_RMS_EPS,
+    .expert_weight_scale = 1.0f,
+    .rope_freq_base = 10000000.0f,
+    .rope_scale_factor = DS4_DEFAULT_ROPE_SCALE_FACTOR,
+    .rope_yarn_beta_fast = DS4_DEFAULT_ROPE_YARN_BETA_FAST,
+    .rope_yarn_beta_slow = DS4_DEFAULT_ROPE_YARN_BETA_SLOW,
+    .compress_rope_freq_base = DS4_DEFAULT_COMPRESS_ROPE_FREQ_BASE,
+    .rope_orig_ctx = DS4_DEFAULT_ROPE_ORIG_CTX,
+
+    .qwen_full_attn_interval = 4,
+    .qwen_attn_output_gate = true,
+    .qwen_lin_key_head = 16,
+    .qwen_lin_key_head_dim = 128,
+    .qwen_lin_value_head = 32,
+    .qwen_lin_value_head_dim = 128,
+    .qwen_lin_conv_kernel = 4,
+    .qwen_shared_intermediate = 512,
+};
+
 static ds4_shape g_ds4_shape = {
     .name = "DeepSeek V4 Flash",
     .variant = DS4_VARIANT_FLASH,
@@ -321,6 +379,17 @@ static uint32_t g_ds4_compress_ratios[DS4_MAX_LAYER] = {0};
 #define DS4_ROPE_YARN_BETA_SLOW       (g_ds4_shape.rope_yarn_beta_slow)
 #define DS4_COMPRESS_ROPE_FREQ_BASE   (g_ds4_shape.compress_rope_freq_base)
 #define DS4_ROPE_ORIG_CTX             (g_ds4_shape.rope_orig_ctx)
+
+/* Qwen3.6-only geometry (zero on the DeepSeek shapes). */
+#define DS4_IS_QWEN                   (g_ds4_shape.variant == DS4_VARIANT_QWEN36)
+#define DS4_QWEN_FULL_ATTN_INTERVAL   (g_ds4_shape.qwen_full_attn_interval)
+#define DS4_QWEN_ATTN_OUTPUT_GATE     (g_ds4_shape.qwen_attn_output_gate)
+#define DS4_QWEN_LIN_KEY_HEAD         (g_ds4_shape.qwen_lin_key_head)
+#define DS4_QWEN_LIN_KEY_HEAD_DIM     (g_ds4_shape.qwen_lin_key_head_dim)
+#define DS4_QWEN_LIN_VALUE_HEAD       (g_ds4_shape.qwen_lin_value_head)
+#define DS4_QWEN_LIN_VALUE_HEAD_DIM   (g_ds4_shape.qwen_lin_value_head_dim)
+#define DS4_QWEN_LIN_CONV_KERNEL      (g_ds4_shape.qwen_lin_conv_kernel)
+#define DS4_QWEN_SHARED_INTERMEDIATE  (g_ds4_shape.qwen_shared_intermediate)
 
 static int g_ds4_lock_fd = -1;
 
